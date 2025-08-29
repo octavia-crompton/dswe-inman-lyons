@@ -1,5 +1,6 @@
 import os
 import subprocess
+import shlex
 import ee
 
 # Google Cloud Storage bucket utilities
@@ -25,18 +26,34 @@ def list_bucket_subfolders(bucket_name, folder):
     return [f for f in files]
 
 # Earth Engine asset management
-def upload_to_gee(file_path, asset_folder):
+def upload_to_gee(file_path, asset_folder, execute: bool = True):
+    """
+    Upload a local/gs:// path to a GEE image asset.
+
+    Parameters:
+        file_path (str): Local path or gs:// URL to the COG/GeoTIFF.
+        asset_folder (str): GEE folder where the image will be created.
+        execute (bool): If False, only print the command (dry-run) and return.
+
+    Returns:
+        dict with keys: asset_id, file_path, executed (bool), command (list[str])
+    """
     file_name = os.path.basename(file_path).split(".")[0]
     asset_id = f"{asset_folder}/{file_name}"
-    print(file_path)
-    print(asset_id)
-    subprocess.run([
+    cmd = [
         "earthengine",
         "upload",
         "image",
         "--asset_id=" + asset_id,
         file_path,
-    ])
+    ]
+    print(f"Source: {file_path}")
+    print(f"Asset:  {asset_id}")
+    if not execute:
+        # print("[DRY RUN] " + " ".join(shlex.quote(p) for p in cmd))
+        return {"asset_id": asset_id, "file_path": file_path, "executed": False, "command": cmd}
+    subprocess.run(cmd)
+    return {"asset_id": asset_id, "file_path": file_path, "executed": True, "command": cmd}
 
 def make_assets_public(folder_path):
     """
@@ -120,3 +137,88 @@ def delete_all_subfolders(gee_asset_folder):
         print("All subfolders deleted successfully.")
     except Exception as e:
         print(f"Failed to list assets in folder: {gee_asset_folder}. Error: {e}")
+
+
+def walk_assets(parent):
+    """Recursively list all asset paths under a parent (folders, image collections, images, tables)."""
+    out = []
+    try:
+        page = ee.data.listAssets(parent)
+    except Exception as e:
+        print(f"Failed to list assets under {parent}: {e}")
+        return out
+    for a in page.get('assets', []):
+        aid, typ = a.get('name'), a.get('type')
+        if not aid:
+            continue
+        out.append(aid)
+        if typ in ('FOLDER', 'IMAGE_COLLECTION'):
+            out.extend(walk_assets(aid))
+    return out
+
+
+def make_tree_public(root):
+    """Recursively set all assets under root to public read. Preserves other ACL fields."""
+    ids = [root] + walk_assets(root)
+    for aid in ids:
+        try:
+            acl = ee.data.getAssetAcl(aid)
+            # Preserve owners/writers/readers, just flip public flag
+            acl['all_users_can_read'] = True
+            ee.data.setAssetAcl(aid, acl)
+            print(f"PUBLIC: {aid}")
+        except Exception as e:
+            print(f"FAILED: {aid} -> {e}")
+
+
+def share_tree_with_user(root: str, email: str, role: str = 'READER', dry_run: bool = False, sleep_sec: float = 0.0):
+    """Recursively share all assets under root with a specific user/group.
+
+    Args:
+        root: Asset root path (folder/collection), e.g., 'projects/ee-yourproj/assets/foo'.
+        email: Principal to grant access to. If it doesn't contain a prefix, 'user:' is assumed.
+        role: 'READER' or 'WRITER'.
+        dry_run: If True, print planned changes without applying.
+        sleep_sec: Optional sleep between requests to avoid rate limits.
+
+    Notes:
+        - Preserves existing ACLs and de-duplicates principals.
+        - Includes the root asset itself.
+    """
+    import time
+
+    # Normalize the principal format
+    principal = email if (":" in email) else f"user:{email}"
+    if role not in ("READER", "WRITER"):
+        raise ValueError("role must be 'READER' or 'WRITER'")
+
+    ids = [root] + walk_assets(root)
+    updated = 0
+    for aid in ids:
+        try:
+            acl = ee.data.getAssetAcl(aid)
+            # Ensure keys exist
+            readers = set(acl.get('readers', []))
+            writers = set(acl.get('writers', []))
+
+            if role == 'READER':
+                if principal not in readers:
+                    readers.add(principal)
+                    acl['readers'] = sorted(readers)
+                action = 'ADD-READER'
+            else:
+                if principal not in writers:
+                    writers.add(principal)
+                    acl['writers'] = sorted(writers)
+                action = 'ADD-WRITER'
+
+            print(f"{action}: {principal} -> {aid}")
+            if not dry_run:
+                ee.data.setAssetAcl(aid, acl)
+                updated += 1
+                if sleep_sec:
+                    time.sleep(sleep_sec)
+        except Exception as e:
+            print(f"FAILED: {aid} -> {e}")
+    if not dry_run:
+        print(f"Updated ACLs on {updated} assets under {root}")

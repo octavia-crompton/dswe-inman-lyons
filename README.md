@@ -73,7 +73,7 @@ Notebook overview:
 
 ---
 
-## Tips
+## Notes
 
 - Asset paths like `projects/ee-okavango/assets/...` are private by default. Use `make_assets_public` or share with specific users/groups.
 - For large uploads, consider batching by folder and monitoring `earthengine upload tasks` in the CLI.
