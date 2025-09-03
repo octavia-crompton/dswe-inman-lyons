@@ -10,15 +10,12 @@ Tools to upload Cloud Optimized GeoTIFFs (COGs) from Google Cloud Storage to Goo
   - `gee_utils.py` — shared helpers for:
     - Listing GCS folders/files (`gsutil` wrappers)
     - Uploading images to GEE (`earthengine upload image`)
-    - Asset ACL updates, listing, metadata inspection, counting
-    - Creating/deleting GEE folders
 - `notebooks/`
   - `bucket_to_gee.ipynb` — discover COGs in a GCS bucket and upload to a GEE asset folder
   - `gee_asset_management.ipynb` — inspect, count, and manage GEE assets (ACLs, metadata)
   - `manage_gee_assets_okavango.ipynb` — Okavango-focused asset maintenance tasks
   - `dswe_image_export.ipynb` — export DSWE-derived rasters (e.g., GeoTIFF/PNG)
   - `archive/` — date-prefixed archived notebooks (e.g., `2025-08-04_bucket_to_gee.ipynb`)
-- `.gitignore` — excludes large data folders and local caches
 
 Optional local data folders (ignored by git):
 - `DSWE_images/`, `dswe-inman-lyons-points/`, etc.
