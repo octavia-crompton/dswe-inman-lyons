@@ -65,14 +65,6 @@ Notebook overview:
 
 ---
 
-## Notes
-
-- Asset paths like `projects/ee-okavango/assets/...` are private by default. Use `make_assets_public` or share with specific users/groups.
-- For large uploads, consider batching by folder and monitoring `earthengine upload tasks` in the CLI.
-- Keep archived notebooks in `notebooks/archive/` with date prefixes for provenance.
-
----
-
 ## Development
 
 - Shared utilities live in `src/gee_utils.py`. Prefer updating there vs duplicating code in notebooks.
