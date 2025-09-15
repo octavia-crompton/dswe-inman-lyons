@@ -76,7 +76,6 @@ Notebook overview:
 ## Development
 
 - Shared utilities live in `src/gee_utils.py`. Prefer updating there vs duplicating code in notebooks.
-- If Python can’t find `src`, set `PYTHONPATH` to the repo root or use the small `sys.path` snippet above.
 
 ---
 
