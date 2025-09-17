@@ -10,24 +10,16 @@ Tools to upload Cloud Optimized GeoTIFFs (COGs) from Google Cloud Storage to Goo
   - `gee_utils.py` — shared helpers for:
     - Listing GCS folders/files (`gsutil` wrappers)
     - Uploading images to GEE (`earthengine upload image`)
-    - Asset ACL updates, listing, metadata inspection, counting
-    - Creating/deleting GEE folders
 - `notebooks/`
   - `bucket_to_gee.ipynb` — discover COGs in a GCS bucket and upload to a GEE asset folder
-  - `gee_asset_management.ipynb` — inspect, count, and manage GEE assets (ACLs, metadata)
   - `manage_gee_assets_okavango.ipynb` — Okavango-focused asset maintenance tasks
   - `dswe_image_export.ipynb` — export DSWE-derived rasters (e.g., GeoTIFF/PNG)
   - `archive/` — date-prefixed archived notebooks (e.g., `2025-08-04_bucket_to_gee.ipynb`)
-- `.gitignore` — excludes large data folders and local caches
-
-Optional local data folders (ignored by git):
-- `DSWE_images/`, `dswe-inman-lyons-points/`, etc.
 
 ---
 
 ## Requirements
 
-- Python 3.10+
 - Google Earth Engine Python API: `earthengine-api`
 - Google Cloud SDK with `gsutil` installed
 
@@ -73,18 +65,9 @@ Notebook overview:
 
 ---
 
-## Notes
-
-- Asset paths like `projects/ee-okavango/assets/...` are private by default. Use `make_assets_public` or share with specific users/groups.
-- For large uploads, consider batching by folder and monitoring `earthengine upload tasks` in the CLI.
-- Keep archived notebooks in `notebooks/archive/` with date prefixes for provenance.
-
----
-
 ## Development
 
 - Shared utilities live in `src/gee_utils.py`. Prefer updating there vs duplicating code in notebooks.
-- If Python can’t find `src`, set `PYTHONPATH` to the repo root or use the small `sys.path` snippet above.
 
 ---
 
