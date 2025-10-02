@@ -1,42 +1,84 @@
+"""Utility helpers for Google Cloud Storage (GCS) and Google Earth Engine (GEE).
+
+This module centralizes helper functions that were previously duplicated across
+multiple notebooks. They provide a thin, explicit wrapper around common shell
+(`gsutil`, `earthengine`) and Earth Engine Python API calls for:
+
+* Listing bucket contents (files, folders, subfolders)
+* Uploading Cloud Optimized GeoTIFFs (with dry‑run support)
+* Basic asset inspection (type, metadata, counting)
+* Folder creation / bulk deletion of subfolders
+* Recursive traversal of an asset tree
+* Making an entire asset tree public
+* Sharing an entire asset tree with a user or group (dry‑run capable)
+
+Design notes:
+* Functions prefer returning simple Python data (lists/dicts) when practical.
+* Destructive / long‑running operations expose a dry‑run style flag where
+    relevant (`upload_to_gee` already mirrors this pattern).
+* Error handling is shallow: errors are caught, logged to stdout,
+    and processing continues for subsequent assets. This is suitable for
+    interactive / notebook workflows; consider raising exceptions or integrating
+    structured logging for production pipelines.
+"""
+
 import os
 import subprocess
 import shlex
 import ee
 
 # Google Cloud Storage bucket utilities
-def list_bucket_files(folder):
-    result = subprocess.run([
-        "gsutil", "ls", folder
-    ], stdout=subprocess.PIPE, text=True)
+def list_bucket_files(folder: str):
+    """List COG GeoTIFF file paths in a GCS folder (non‑recursive).
+
+    Args:
+        folder: A fully qualified GCS URI (e.g., ``gs://bucket/path/``).
+
+    Returns:
+        List[str]: Only entries ending with ``cog.tif`` (COG convention used in project).
+    """
+    result = subprocess.run(["gsutil", "ls", folder], stdout=subprocess.PIPE, text=True)
     files = result.stdout.strip().split("\n")
     return [f for f in files if f.endswith("cog.tif")]
 
-def list_bucket_folders(bucket_name):
-    result = subprocess.run([
-        "gsutil", "ls", f"gs://{bucket_name}"
-    ], stdout=subprocess.PIPE, text=True)
+def list_bucket_folders(bucket_name: str):
+    """List immediate objects / pseudo-folders in a bucket root.
+
+    Args:
+        bucket_name: Bucket name without ``gs://`` prefix.
+
+    Returns:
+        List[str]: Raw output lines from ``gsutil ls gs://<bucket>``.
+    """
+    result = subprocess.run(["gsutil", "ls", f"gs://{bucket_name}"], stdout=subprocess.PIPE, text=True)
     files = result.stdout.strip().split("\n")
     return [f for f in files]
 
-def list_bucket_subfolders(bucket_name, folder):
-    result = subprocess.run([
-        "gsutil", "ls", f"gs://{bucket_name}{folder}"
-    ], stdout=subprocess.PIPE, text=True)
+def list_bucket_subfolders(bucket_name: str, folder: str):
+    """List immediate children under a specific folder path within a bucket.
+
+    Args:
+        bucket_name: Bucket name without scheme.
+        folder: Folder path suffix (must include trailing slash if targeting that convention).
+
+    Returns:
+        List[str]: Raw entries returned by ``gsutil ls``.
+    """
+    result = subprocess.run(["gsutil", "ls", f"gs://{bucket_name}{folder}"], stdout=subprocess.PIPE, text=True)
     files = result.stdout.strip().split("\n")
     return [f for f in files]
 
 # Earth Engine asset management
-def upload_to_gee(file_path, asset_folder, execute: bool = True):
-    """
-    Upload a local/gs:// path to a GEE image asset.
+def upload_to_gee(file_path: str, asset_folder: str, execute: bool = True):
+    """Upload a local or ``gs://`` COG/GeoTIFF to a GEE image asset.
 
-    Parameters:
-        file_path (str): Local path or gs:// URL to the COG/GeoTIFF.
-        asset_folder (str): GEE folder where the image will be created.
-        execute (bool): If False, only print the command (dry-run) and return.
+    Args:
+        file_path: Local filesystem path or ``gs://`` URL to the source raster.
+        asset_folder: Destination GEE folder (e.g., ``projects/ee-yourproj/assets/dswe``).
+        execute: When False perform a dry run (return command without executing).
 
     Returns:
-        dict with keys: asset_id, file_path, executed (bool), command (list[str])
+        Dict[str, Any]: keys ``asset_id``, ``file_path``, ``executed`` (bool), ``command`` (List[str]).
     """
     file_name = os.path.basename(file_path).split(".")[0]
     asset_id = f"{asset_folder}/{file_name}"
@@ -55,9 +97,11 @@ def upload_to_gee(file_path, asset_folder, execute: bool = True):
     subprocess.run(cmd)
     return {"asset_id": asset_id, "file_path": file_path, "executed": True, "command": cmd}
 
-def make_assets_public(folder_path):
-    """
-    Make all assets in a specified GEE folder publicly readable.
+def make_assets_public(folder_path: str):
+    """Make all direct child assets inside a folder publicly readable.
+
+    This does not recurse—use :func:`make_tree_public` for a full subtree.
+    Errors per asset are logged and do not halt iteration.
     """
     try:
         assets = ee.data.listAssets({'parent': folder_path})['assets']
@@ -72,7 +116,13 @@ def make_assets_public(folder_path):
     except Exception as e:
         print(f"Failed to list assets in folder: {folder_path}. Error: {e}")
 
-def check_asset_types(asset_folder, max_assets=10):
+def check_asset_types(asset_folder: str, max_assets: int = 10):
+    """Print the asset type for up to ``max_assets`` children of a folder.
+
+    Args:
+        asset_folder: Parent asset path.
+        max_assets: Maximum assets to query (pagination not continued beyond this call).
+    """
     try:
         assets = ee.data.listAssets({'parent': asset_folder, 'pageSize': max_assets})['assets']
         print(f"Checking asset types in '{asset_folder}':\n")
@@ -83,7 +133,13 @@ def check_asset_types(asset_folder, max_assets=10):
     except Exception as e:
         print(f"Error: {e}")
 
-def inspect_asset_metadata(asset_folder, max_assets=10):
+def inspect_asset_metadata(asset_folder: str, max_assets: int = 10):
+    """Print full metadata dictionary for up to ``max_assets`` children.
+
+    Args:
+        asset_folder: Parent asset path.
+        max_assets: Maximum assets to inspect.
+    """
     try:
         assets = ee.data.listAssets({'parent': asset_folder, 'pageSize': max_assets})['assets']
         print(f"Inspecting metadata for the first {len(assets)} assets in '{asset_folder}':\n")
@@ -97,7 +153,12 @@ def inspect_asset_metadata(asset_folder, max_assets=10):
     except Exception as e:
         print(f"Error inspecting metadata: {e}")
 
-def count_assets_in_folder(asset_folder):
+def count_assets_in_folder(asset_folder: str):
+    """Count assets (any type) directly under a folder using pagination.
+
+    Args:
+        asset_folder: Parent asset path.
+    """
     try:
         total_assets = 0
         next_page_token = None
@@ -113,7 +174,13 @@ def count_assets_in_folder(asset_folder):
     except Exception as e:
         print(f"Error counting assets: {e}")
 
-def create_gee_folder(parent_folder, folder_name):
+def create_gee_folder(parent_folder: str, folder_name: str):
+    """Create a new folder under a parent asset path.
+
+    Args:
+        parent_folder: Existing parent asset path.
+        folder_name: Leaf folder name to create.
+    """
     asset_path = f"{parent_folder}/{folder_name}"
     try:
         ee.data.createAsset({'type': 'folder'}, asset_path)
@@ -121,9 +188,11 @@ def create_gee_folder(parent_folder, folder_name):
     except Exception as e:
         print(f"Failed to create folder: {asset_path}. Error: {e}")
 
-def delete_all_subfolders(gee_asset_folder):
-    """
-    Deletes all subfolders in a specified GEE asset folder.
+def delete_all_subfolders(gee_asset_folder: str):
+    """Delete (non‑recursively) all immediate subfolders in a folder.
+
+    Args:
+        gee_asset_folder: Parent folder whose direct child folders will be removed.
     """
     try:
         assets = ee.data.listAssets({'parent': gee_asset_folder})['assets']
@@ -139,8 +208,17 @@ def delete_all_subfolders(gee_asset_folder):
         print(f"Failed to list assets in folder: {gee_asset_folder}. Error: {e}")
 
 
-def walk_assets(parent):
-    """Recursively list all asset paths under a parent (folders, image collections, images, tables)."""
+def walk_assets(parent: str):
+    """Recursively collect all asset paths beneath a parent.
+
+    Includes the contents (not the parent itself) of folders and image collections.
+
+    Args:
+        parent: Asset path to start from.
+
+    Returns:
+        List[str]: All discovered child asset IDs.
+    """
     out = []
     try:
         page = ee.data.listAssets(parent)
@@ -157,8 +235,14 @@ def walk_assets(parent):
     return out
 
 
-def make_tree_public(root):
-    """Recursively set all assets under root to public read. Preserves other ACL fields."""
+def make_tree_public(root: str):
+    """Recursively set an entire asset subtree (including root) to public read.
+
+    Preserves existing readers / writers / owners, only toggling the public flag.
+
+    Args:
+        root: Asset root path (folder / image collection).
+    """
     ids = [root] + walk_assets(root)
     for aid in ids:
         try:
@@ -172,18 +256,20 @@ def make_tree_public(root):
 
 
 def share_tree_with_user(root: str, email: str, role: str = 'READER', dry_run: bool = False, sleep_sec: float = 0.0):
-    """Recursively share all assets under root with a specific user/group.
+    """Recursively share an entire asset subtree with a principal.
 
     Args:
-        root: Asset root path (folder/collection), e.g., 'projects/ee-yourproj/assets/foo'.
-        email: Principal to grant access to. If it doesn't contain a prefix, 'user:' is assumed.
-        role: 'READER' or 'WRITER'.
-        dry_run: If True, print planned changes without applying.
-        sleep_sec: Optional sleep between requests to avoid rate limits.
+        root: Asset root path (folder / image collection) e.g. ``projects/ee-yourproj/assets/foo``.
+        email: Principal identifier. If no prefix (``user:``, ``group:``, etc.) is present,
+            ``user:`` is prepended automatically.
+        role: Either ``'READER'`` or ``'WRITER'``.
+        dry_run: When True, only print intended ACL changes.
+        sleep_sec: Optional delay between API calls (helpful for large trees / rate limiting).
 
     Notes:
-        - Preserves existing ACLs and de-duplicates principals.
-        - Includes the root asset itself.
+        - Existing ACL entries are preserved; duplicates are avoided.
+        - Root asset is included.
+        - For very large trees, you may wish to batch or add exponential backoff.
     """
     import time
 
