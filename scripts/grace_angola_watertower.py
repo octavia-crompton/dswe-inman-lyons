@@ -1,0 +1,170 @@
+
+import pathlib, warnings
+import pandas as pd
+import xarray as xr
+import geopandas as gpd
+from shapely.geometry import box
+import rioxarray  # noqa: F401
+import earthaccess as ea
+
+# ========================== USER CONFIG ==========================
+DATA_DIR = pathlib.Path("..data//grace_angola_watertower"); DATA_DIR.mkdir(parents=True, exist_ok=True)
+START, END = "2002-04-01", "2025-10-01"
+
+# If you have a precise polygon for the Angola “watertower” (e.g., HydroBASINS Upper Cubango+Cuito), set it here:
+AOI_POLYFILE = None  # e.g., "angola_watertower.geojson" or ".shp"
+
+# Fallback bbox roughly covering the Angola highlands feeding the Okavango (Cubango/Cuito headwaters)
+ANGOLA_WATERTOWER_BBOX = (15.0, -15.5, 19.5, -11.0)  # (minLon, minLat, maxLon, maxLat)
+
+# [16.002853914050505,-15.75356104503235]
+# 1: [19.320725007800505,-15.75356104503235]
+# 2: [19.320725007800505,-12.096694463507276]
+# 3: [16.002853914050505,-12.096694463507276]
+# 4: [16.002853914050505,-15.75356104503235]
+    
+# File name prefix for per-month GeoTIFFs
+PREFIX = "grace_lwe_angola_watertower_"
+
+PREFERRED_SHORTNAMES = [
+    "TELLUS_GRAC-GRFO_MASCON_CRI_GRID_RL06.3_V4",
+    "TELLUS_GRAC-GRFO_MASCON_CRI_GRID_RL06.3_V03",
+    "TELLUS_GRAC-GRFO_MASCON_CRI_GRID_RL06.1_V2",
+    "TELLUS_GRAC-GRFO_MASCON_CRI_GRID_RL06_V2",
+]
+
+# ========================== HELPERS ==========================
+def load_aoi():
+    if AOI_POLYFILE:
+        aoi = gpd.read_file(AOI_POLYFILE).to_crs(4326)
+        geom = aoi.geometry.unary_union
+        return gpd.GeoSeries([geom], crs="EPSG:4326")
+    minx, miny, maxx, maxy = ANGOLA_WATERTOWER_BBOX
+    return gpd.GeoSeries([box(minx, miny, maxx, maxy)], crs="EPSG:4326")
+
+def pick_lwe_var(ds: xr.Dataset) -> xr.DataArray:
+    for v in ["lwe_thickness","LWE_thickness","lwe_thickness_jpl","lwe_thickness_csr","water_equivalent_thickness"]:
+        if v in ds: return ds[v]
+    for v in ds.data_vars:
+        ln = str(ds[v].attrs.get("long_name","")).lower()
+        if "water equivalent" in ln or "lwe" in ln: return ds[v]
+    raise KeyError("Could not find LWE thickness variable.")
+
+def _infer_lon_lat_names(da: xr.DataArray):
+    dims_lower = {d.lower(): d for d in da.dims}
+    lon_name = next((dims_lower[k] for k in ("lon","longitude","x") if k in dims_lower), None)
+    lat_name = next((dims_lower[k] for k in ("lat","latitude","y") if k in dims_lower), None)
+    if lon_name is None or lat_name is None:
+        coords_lower = {c.lower(): c for c in da.coords}
+        if lon_name is None:
+            lon_name = next((coords_lower[k] for k in ("lon","longitude","x") if k in coords_lower), None)
+        if lat_name is None:
+            lat_name = next((coords_lower[k] for k in ("lat","latitude","y") if k in coords_lower), None)
+    if lon_name is None or lat_name is None:
+        raise KeyError(f"Cannot infer lon/lat names from dims={list(da.dims)} coords={list(da.coords)}")
+    return lon_name, lat_name
+
+def ensure_spatial(da: xr.DataArray) -> xr.DataArray:
+    lon_name, lat_name = _infer_lon_lat_names(da)
+    if float(da[lon_name].max()) > 180:
+        da = da.assign_coords({lon_name: (((da[lon_name] + 180) % 360) - 180)})
+    da = da.sortby(lon_name).sortby(lat_name, ascending=False)
+    da = da.rio.set_spatial_dims(x_dim=lon_name, y_dim=lat_name, inplace=False)
+    da = da.rio.write_crs("EPSG:4326", inplace=False)
+    return da
+
+def clip_and_write(da2d: xr.DataArray, aoi_gs: gpd.GeoSeries, ts_str: str, out_dir: pathlib.Path):
+    da2d = ensure_spatial(da2d)  # re-assert per slice
+    clipped = da2d.rio.clip(aoi_gs.to_crs(4326).geometry, all_touched=True, drop=True)
+    tif_path = out_dir / f"{PREFIX}{ts_str}.tif"
+    clipped.rio.to_raster(tif_path)
+    mean_cm = float(clipped.mean(skipna=True).values)
+    std_cm  = float(clipped.std(skipna=True).values)
+    return mean_cm, std_cm, str(tif_path)
+
+def find_dataset_and_granules():
+    cats = []
+    for sn in PREFERRED_SHORTNAMES:
+        try:
+            cats.extend(ea.search_datasets(short_name=sn) or [])
+        except Exception:
+            pass
+    if not cats:
+        cats = ea.search_datasets(keyword="GRACE GRACE-FO Mascon RL06 JPL CRI grid") or []
+
+    def score(meta):
+        sname = meta["umm"].get("ShortName","")
+        s = sum(k in sname for k in ("GRAC","GRFO","MASCON","CRI","RL06"))
+        if "RL06.3" in sname: s += 2
+        if sname.endswith("_V4"): s += 2
+        return s
+
+    cats = sorted(cats, key=score, reverse=True)
+    bbox = ANGOLA_WATERTOWER_BBOX
+
+    for d in cats:
+        cid = d["meta"]["concept-id"]
+        sname = d["umm"].get("ShortName","")
+        try:
+            gs = ea.search_data(concept_id=cid, temporal=(START, END), bounding_box=bbox, count=5000)
+            if gs:
+                print(f"Using dataset: {sname} (concept-id={cid}) → {len(gs)} granule(s)")
+                return d, gs
+        except Exception as e:
+            warnings.warn(f"Skipping {sname}: {e}")
+    raise RuntimeError("No suitable GRACE/FO JPL Mascon dataset returned granules for your time/bbox.")
+
+def open_cloud(granules):
+    opened = ea.open(granules)
+    if not opened: raise RuntimeError("earthaccess.open returned no file-like objects.")
+    with opened[0] as fo:
+        return xr.open_dataset(fo, decode_times=True)
+
+# ========================== MAIN ==========================
+def main():
+    aoi = load_aoi()
+    ea.login()  # caches a token
+
+    dataset_meta, granules = find_dataset_and_granules()
+
+    local_files = ea.download(granules, local_path=str(DATA_DIR))
+    print(f"Downloaded: {len(local_files)} local file(s)")
+
+    rows = []
+
+    if local_files:
+        for i, f in enumerate(sorted(map(str, local_files))):
+            with xr.open_dataset(f, decode_times=True) as ds:
+                da = ensure_spatial(pick_lwe_var(ds))
+                if "time" in da.dims:
+                    da = da.sel(time=slice(START, END))
+                    for t in pd.to_datetime(da["time"].values):
+                        da_t = da.sel(time=t, drop=True)  # 2-D slice
+                        ts = pd.to_datetime(t).strftime("%Y-%m")
+                        m, s, tif = clip_and_write(da_t, aoi, ts, DATA_DIR)
+                        rows.append({"date": ts, "lwe_mean_cm": m, "lwe_std_cm": s, "tif": tif})
+                else:
+                    ts = "no-time"
+                    m, s, tif = clip_and_write(da, aoi, ts, DATA_DIR)
+                    rows.append({"date": ts, "lwe_mean_cm": m, "lwe_std_cm": s, "tif": tif})
+    else:
+        ds = open_cloud(granules)
+        da = ensure_spatial(pick_lwe_var(ds))
+        if "time" in da.dims:
+            da = da.sel(time=slice(START, END))
+            for t in pd.to_datetime(da["time"].values):
+                da_t = da.sel(time=t, drop=True)
+                ts = pd.to_datetime(t).strftime("%Y-%m")
+                m, s, tif = clip_and_write(da_t, aoi, ts, DATA_DIR)
+                rows.append({"date": ts, "lwe_mean_cm": m, "lwe_std_cm": s, "tif": tif})
+        else:
+            ts = "no-time"
+            m, s, tif = clip_and_write(da, aoi, ts, DATA_DIR)
+            rows.append({"date": ts, "lwe_mean_cm": m, "lwe_std_cm": s, "tif": tif})
+
+    out_csv = DATA_DIR / "grace_angola_watertower_timeseries.csv"
+    pd.DataFrame(rows).sort_values("date").to_csv(out_csv, index=False)
+    print("Wrote:", out_csv)
+
+if __name__ == "__main__":
+    main()
