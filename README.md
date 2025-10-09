@@ -1,7 +1,5 @@
 ## DSWE - Inman Lyons comparison
 
-Tools to upload Cloud Optimized GeoTIFFs (COGs) from Google Cloud Storage to Google Earth Engine (GEE), manage GEE assets, and export DSWE-derived imagery. The repo is organized as Python utilities plus Jupyter notebooks.
-
 ---
 
 ## Project structure
