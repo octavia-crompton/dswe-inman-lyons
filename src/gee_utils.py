@@ -25,7 +25,16 @@ Design notes:
 import os
 import subprocess
 import shlex
-import ee
+from typing import Tuple, List, Any
+try:
+    import ee as _ee  # type: ignore
+except Exception:  # pragma: no cover - envs without EE
+    _ee = None  # type: ignore
+ee: Any = _ee  # use dynamic Any to satisfy static analysis where EE isn't available
+try:
+    from shapely import geometry as _sgeom  # type: ignore
+except Exception:  # pragma: no cover - optional at import time
+    _sgeom = None  # type: ignore
 
 # Google Cloud Storage bucket utilities
 def list_bucket_files(folder: str):
@@ -308,3 +317,89 @@ def share_tree_with_user(root: str, email: str, role: str = 'READER', dry_run: b
             print(f"FAILED: {aid} -> {e}")
     if not dry_run:
         print(f"Updated ACLs on {updated} assets under {root}")
+
+
+# =============================
+# Notebook-friendly EE utilities
+# =============================
+
+def ee_init() -> None:
+    """Authenticate and initialize Earth Engine.
+
+    Tries a silent ``ee.Initialize()`` first; if it fails, runs ``ee.Authenticate()``
+    to complete OAuth in-notebook and initializes again.
+    """
+    try:
+        ee.Initialize()  # type: ignore[attr-defined]
+    except Exception:
+        ee.Authenticate()  # type: ignore[attr-defined]
+        ee.Initialize()  # type: ignore[attr-defined]
+
+
+def load_regions_from_ee(asset_id: str):
+    """Download a GEE FeatureCollection as a GeoDataFrame in EPSG:4326.
+
+    Tries multiple geemap APIs; falls back to a pure EE -> GeoJSON path.
+
+    Returns:
+        geopandas.GeoDataFrame
+    """
+    # Lazy imports to avoid hard dependency at module import time
+    try:
+        import geopandas as gpd  # type: ignore
+    except Exception as e:
+        raise ImportError("geopandas is required for load_regions_from_ee().") from e
+
+    fc = ee.FeatureCollection(asset_id)  # type: ignore[attr-defined]
+    try:
+        import geemap  # type: ignore
+        if hasattr(geemap, "ee_to_geopandas"):
+            gdf = geemap.ee_to_geopandas(fc)
+        elif hasattr(geemap, "ee_to_gdf"):
+            gdf = geemap.ee_to_gdf(fc)
+        elif hasattr(geemap, "ee_to_geojson"):
+            gj = geemap.ee_to_geojson(fc)
+            gdf = gpd.GeoDataFrame.from_features(gj["features"], crs="EPSG:4326")
+        else:
+            raise AttributeError("No compatible geemap export function found.")
+    except Exception:
+        # Fallback: EE getInfo -> GeoJSON -> GeoDataFrame (OK for small/medium FCs)
+        fc_geo = fc.getInfo()  # type: ignore[operator]
+        gdf = gpd.GeoDataFrame.from_features(fc_geo["features"], crs="EPSG:4326")
+
+    if gdf.crs is None:
+        gdf.set_crs(4326, inplace=True)
+    # ensure an identifier column exists
+    for c in ["region", "region_id", "name", "zone", "basin", "id"]:
+        if c in gdf.columns:
+            break
+    else:
+        gdf["region"] = [f"region_{i}" for i in range(len(gdf))]
+    return gdf
+
+
+def ee_fc_to_shapes(asset_path: str, id_prop: str) -> Tuple[List[str], List[object]]:
+    """Fetch a modest FeatureCollection and return (names, shapely geometries).
+
+    Args:
+        asset_path: GEE FeatureCollection asset id.
+        id_prop: Property name that holds the region identifier.
+    """
+    sgeom = _sgeom  # use lazy import captured above
+    if sgeom is None:
+        raise ImportError("shapely is required for ee_fc_to_shapes().")
+
+    fc = ee.FeatureCollection(asset_path)  # type: ignore[attr-defined]
+    info = fc.getInfo()  # OK for small/medium FCs
+    names: List[str] = []
+    polys: List[object] = []
+    for i, feat in enumerate(info.get("features", [])):
+        props = feat.get("properties", {})
+        rid = props.get(id_prop, f"region_{i}")
+        geom = feat.get("geometry", None)
+        if geom:
+            names.append(str(rid))
+            polys.append(sgeom.shape(geom))
+    if not names:
+        raise RuntimeError("No features found in the provided FeatureCollection.")
+    return names, polys

@@ -67,8 +67,13 @@ def ensure_spatial(da: xr.DataArray) -> xr.DataArray:
     return da
 
 def clip_and_write(da2d: xr.DataArray, aoi_gs: gpd.GeoSeries, ts_str: str, out_dir: pathlib.Path):
-    """Re-assert spatial dims on the *slice*, clip, write GeoTIFF, return mean/std."""
-    da2d = ensure_spatial(da2d)  # ← CRUCIAL: do this on every slice
+    """Re-assert spatial dims on the *slice*, clip, write GeoTIFF, return mean/std.
+    plain (unweighted) mean over all clipped grid cells inside your AOI, for each time step.
+    collapses over all remaining dimensions (lat and lon) → simple arithmetic mean of LWE across all included cells.
+    It does not weight cells by cos(latitude) or actual cell area.
+    Every retained GRACE cell counts equally, even though they differ slightly in physical area with latitude.
+    """
+    da2d = ensure_spatial(da2d)  # ←  do this on every slice
     clipped = da2d.rio.clip(aoi_gs.to_crs(4326).geometry, all_touched=True, drop=True)
     tif_path = out_dir / f"grace_lwe_okavango_{ts_str}.tif"
     clipped.rio.to_raster(tif_path)
@@ -165,3 +170,26 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# All of the PREFERRED_SHORTNAMES below point to JPL GRACE/GRACE-FO mascon L3 products.
+# They contain monthly global water storage / height anomalies relative to a time mean,
+# in equivalent water thickness (cm), derived from the GRACE + GRACE-FO missions and
+# processed with the JPL mascon solution (RL06M).
+#
+# Name components:
+#   GRAC-GRFO  = GRACE + GRACE-FO combined record
+#   MASCON     = mascon inversion (3° equal-area spherical caps)
+#   CRI        = "Coastal Resolution Improvement" filter to reduce land–ocean leakage
+#   GRID       = gridded fields
+#   RL06, RL06.1, RL06.3 = successive RL06 reprocessings (updated background models, etc.)
+#   V2, V03, V4 = product version numbers within that release
+#
+# Of these, TELLUS_GRAC-GRFO_MASCON_CRI_GRID_RL06.3_V4 is the current recommended JPL
+# dataset for most land-hydrology applications.
+
+
+# The product TELLUS_GRAC-GRFO_MASCON_CRI_GRID_RL06.3_V4 has a spatial resolution of 0.5° × 0.5° (lat × lon) on a global grid. 
+# NASA Earthdata
+# So each grid cell is about:
+# ~55 km in latitude, and
+# ~55 km × cos(latitude) in longitude (e.g., ~51 km at 25°S near the Okavango).
