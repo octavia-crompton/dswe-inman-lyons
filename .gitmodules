@@ -1,0 +1,3 @@
+[submodule "scripts/gee"]
+	path = scripts/gee
+	url = https://earthengine.googlesource.com/users/quatratavia/okavango
