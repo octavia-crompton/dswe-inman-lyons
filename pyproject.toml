@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dswe-inman-lyons"
+version = "0.1.0"
+description = "Okavango Delta DSWE / CYGNSS flood-front analysis"
+requires-python = ">=3.10"
+dependencies = [
+    "earthengine-api>=1.6",
+    "geopandas",
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "pyproj",
+    "regionmask",
+    "shapely",
+    "xarray",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff"]
+
+[tool.setuptools.packages.find]
+include = ["src*"]

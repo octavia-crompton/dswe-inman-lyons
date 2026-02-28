@@ -62,8 +62,12 @@ venv.bak/
 # Data and image folders
 DSWE_images/
 dswe-inman-lyons-points/
-data
-archive 
+/data/
+archive
+
+# Figures – track the registry but not the images themselves
+/figures/*
+!/figures/registry.csv
 
 # Ignore src if needed
 # src/
