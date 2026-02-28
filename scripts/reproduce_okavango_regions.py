@@ -1,7 +1,7 @@
 """
 reproduce_okavango_regions.py
 ─────────────────────────────
-Reproduces notebooks/okavango_regions.gpkg from the publicly available
+Reproduces data/regions/okavango_regions.gpkg from the publicly available
 HydroBASINS Africa Level-4 dataset.
 
 Primary source: Google Earth Engine asset
@@ -58,7 +58,7 @@ HYBAS_NAMES = {
 # GEE asset identifier
 GEE_ASSET = "WWF/HydroSHEDS/v1/Basins/hybas_4"
 
-DEFAULT_OUT = Path("notebooks/okavango_regions.gpkg")
+DEFAULT_OUT = Path("data/regions/okavango_regions.gpkg")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
