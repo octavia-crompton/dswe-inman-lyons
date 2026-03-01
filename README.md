@@ -2,6 +2,12 @@
 
 Analysis of Okavango Delta flood dynamics using CYGNSS, DSWE (Landsat/Sentinel-2), GRACE, CHIRPS, and GRDC discharge data.
 
+<p align="center">
+  <img src="assets/okavango_satellite.jpg" alt="SeaWiFS satellite image of the Okavango Delta" width="700"/>
+  <br/>
+  <em>SeaWiFS satellite image of the Okavango Delta, Botswana — a UNESCO World Heritage Site and one of the world's largest inland deltas. Image: NASA/Wikimedia Commons (public domain).</em>
+</p>
+
 ---
 
 ## Project structure
@@ -92,6 +98,26 @@ da = xr.open_mfdataset("data/cygnss_okavango_daily/*.nc", ...)["variable"]
 ds = front_normal_velocity(da, "2019-05-15", "2019-06-01", front_value=0.5)
 ds["v_normal"].plot(cmap="RdBu_r", robust=True)
 ```
+
+---
+
+## Example results
+
+### Flood-pulse phase space — water year 2019
+
+<p align="center">
+  <img src="assets/phaseplot_WY2019.png" alt="Phase plot of flood extent vs discharge, WY2019" width="600"/>
+  <br/>
+  <em>Flood extent (inundated area) vs. Mohembo discharge for water year 2019, showing the characteristic hysteresis loop of the Okavango flood pulse.</em>
+</p>
+
+### Mohembo discharge time series
+
+<p align="center">
+  <img src="assets/mohembo_timeseries.png" alt="Mohembo gauge discharge time series" width="700"/>
+  <br/>
+  <em>Daily discharge at the Mohembo gauging station (GRDC station 1357100) — the primary inflow to the Okavango Delta.</em>
+</p>
 
 ---
 
