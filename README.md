@@ -1,85 +1,104 @@
 ## DSWE - Inman Lyons comparison
 
+Analysis of Okavango Delta flood dynamics using CYGNSS, DSWE (Landsat/Sentinel-2), GRACE, CHIRPS, and GRDC discharge data.
+
 ---
 
 ## Project structure
 
-- `src/`
-  - `gee_utils.py` — shared helpers for:
-    - Listing GCS folders/files (`gsutil` wrappers)
-    - Uploading images to GEE (`earthengine upload image`)
-- `notebooks/`
-  - `bucket_to_gee.ipynb` — discover COGs in a GCS bucket and upload to a GEE asset folder
-  - `manage_gee_assets_okavango.ipynb` — Okavango-focused asset maintenance tasks
-  - `dswe_image_export.ipynb` — export DSWE-derived rasters (e.g., GeoTIFF/PNG)
-  - `archive/` — date-prefixed archived notebooks (e.g., `2025-08-04_bucket_to_gee.ipynb`)
+```
+src/
+  gee_utils.py          — GCS/GEE upload helpers (gsutil wrappers, asset management)
+  okavango_fronts.py    — Core analysis library: wet/dry front detection, front-normal
+                          velocity, channel-parallel velocity, regional composites
+  figures.py            — Shared figure saving utilities (registry-based)
+
+notebooks/
+  CYGNSS Okavango – Front-Normal Velocity.ipynb
+                        — Merges daily CYGNSS NetCDF tiles; computes front-normal and
+                          channel-parallel flood-pulse velocities; monthly composites
+                          of expansion/contraction speed
+  GRACE.ipynb           — GRACE/GRACE-FO terrestrial water storage anomaly analysis
+  GRDC timeseries.ipynb — GRDC station discharge time series
+  Mohembo time series.ipynb
+                        — Mohembo gauge analysis and comparison with remote sensing
+  dswe_IL_compare.ipynb — DSWE vs. Inman-Lyons inundation product comparison
+  dswe_image_export.ipynb
+                        — Export DSWE-derived rasters from GEE
+  ET comparison over the delta.ipynb
+                        — Evapotranspiration comparison over the Okavango Delta
+  bucket_to_gee.ipynb   — Discover COGs in a GCS bucket and upload to GEE
+  manage_gee_assets_okavango.ipynb
+                        — Okavango-focused GEE asset maintenance
+  download CYGNSS data.ipynb
+                        — Download and stage raw CYGNSS NetCDF files
+  download Chirps.ipynb — Download CHIRPS precipitation data
+  archive/              — Date-prefixed archived notebooks
+
+data/
+  cygnss_okavango_daily/   — Per-day CYGNSS NetCDF tiles
+  regions/                 — GeoPackages for basin/region masks (okavango_regions.gpkg)
+  processed/               — Cached intermediate products (FNV monthly composites, etc.)
+  chirps/                  — CHIRPS monthly precipitation grids
+  grace_okavango_out/      — GRACE output for Okavango basin
+  IL-OkavangoDelta_flooding-master/
+                           — Inman-Lyons inundation reference dataset
+
+GRDC_station_data/         — GRDC daily discharge files (.Cmd.txt) + basin GeoJSONs
+```
 
 ---
 
 ## Requirements
 
-- Google Earth Engine Python API: `earthengine-api`
-- Google Cloud SDK with `gsutil` installed
-
-Authenticate once for Earth Engine and GCloud on this machine:
+Install Python dependencies:
 
 ```bash
-# Earth Engine
-earthengine authenticate
+pip install -e .
+# or
+pip install -r requirements.txt
+```
 
-# Google Cloud (for gsutil)
+Key dependencies: `xarray`, `numpy`, `pandas`, `geopandas`, `regionmask`, `shapely`,
+`matplotlib`, `cartopy`, `earthengine-api`, `geemap`, `pyproj`, `netcdf4`.
+
+Authenticate once for Earth Engine and GCloud:
+
+```bash
+earthengine authenticate
 gcloud auth login
 gcloud auth application-default login
 ```
 
 ---
 
-## Using the notebooks
+## Key analysis: front-normal velocity (CYGNSS)
 
-All notebooks import shared helpers from `src/gee_utils.py`. If running from the `notebooks/` folder, the notebooks add the project root to `sys.path` so imports work:
+`src/okavango_fronts.py` provides the core flood-front analysis tools:
+
+| Function | Description |
+|---|---|
+| `front_normal_velocity(da, t1, t2)` | Signed front-normal speed (m/day) between two dates |
+| `front_speed_along_channels(ds_perp, gdf)` | Per-reach median speed along a channel network |
+| `velocity_parallel_to_nearest_channel_field(ds_perp, gdf)` | Pixel-level component parallel to nearest channel |
+| `classify_front_direction(ds_perp)` | Classify front motion relative to SE or an apex point |
+
+Typical workflow in `CYGNSS Okavango – Front-Normal Velocity.ipynb`:
 
 ```python
-import sys, os
-sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..')))
-from src.gee_utils import (
-    list_bucket_files, list_bucket_folders, list_bucket_subfolders,
-    upload_to_gee, make_assets_public,
-    check_asset_types, inspect_asset_metadata, count_assets_in_folder,
-    create_gee_folder, delete_all_subfolders,
-)
-```
+from src.okavango_fronts import front_normal_velocity, front_speed_along_channels
 
-Notebook overview:
-- `bucket_to_gee.ipynb`
-  - Set `bucket_name`, `gee_asset_folder`
-  - List files via `list_bucket_files` and call `upload_to_gee`
-- `gee_asset_management.ipynb`
-  - Use `check_asset_types`, `inspect_asset_metadata`, `count_assets_in_folder`
-  - Use `make_assets_public` to flip ACLs
-- `manage_gee_assets_okavango.ipynb`
-  - Okavango-specific bulk tasks (cleanup, folder management)
-- `dswe_image_export.ipynb`
-  - DSWE export workflows (adjust to your assets and AOI)
+da = xr.open_mfdataset("data/cygnss_okavango_daily/*.nc", ...)["variable"]
+ds = front_normal_velocity(da, "2019-05-15", "2019-06-01", front_value=0.5)
+ds["v_normal"].plot(cmap="RdBu_r", robust=True)
+```
 
 ---
 
 ## Development
 
-- Shared utilities live in `src/gee_utils.py`. Prefer updating there vs duplicating code in notebooks.
+- Analysis utilities live in `src/okavango_fronts.py` — extend there rather than duplicating in notebooks.
+- GEE/GCS helpers live in `src/gee_utils.py`.
+- Figure paths are tracked in `figures/registry.csv` via `src/figures.py`.
+- Install the package in editable mode (`pip install -e .`) so `from src.X import Y` works from any notebook.
 
----
-
-<!--
-Legacy content below referenced a GEE Code Editor script workflow for IL vs DSWE comparison.
-It has been commented out because this repository now centers on Python + notebooks.
-
-## What this does (legacy)
-- Builds a DSWE ImageCollection from monthly assets, harmonizes IL time windows,
-- Compares seasonal means, minima (p10), variability (std, CV), and period change,
-- Exports styled PNG/GeoTIFFs and previews layers in the GEE map.
-
-## Quick start (GEE Code Editor) — legacy
-1. Open the script in the Code Editor.
-2. Check the AOI (Okavango polygon). Adjust if needed.
-3. Set top-level parameters in JS.
--->
