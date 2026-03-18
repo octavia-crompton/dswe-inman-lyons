@@ -1,5 +1,5 @@
 """
-Centralized figure-saving with an auto-updating CSV registry.
+Centralized figure-saving with an auto-updating text registry.
 
 Usage (notebook or script)
 --------------------------
@@ -11,15 +11,14 @@ Usage (notebook or script)
                 source=__file__,          # or the notebook path
                 description="Mohembo daily-Q time series")
 
-The registry lives at ``figures/registry.csv`` and is appended to (or
-created) each time ``save_figure`` is called.  Columns:
+The registry lives at ``figures/registry.txt`` and is appended to (or
+created) each time ``save_figure`` is called.  Each entry is one line:
 
-    filename, source, description, timestamp, dpi, size_bytes
+    timestamp | filename | dpi dpi | size_bytes bytes | source | description
 """
 
 from __future__ import annotations
 
-import csv
 import datetime as _dt
 import inspect
 import os
@@ -35,24 +34,16 @@ if TYPE_CHECKING:
 _THIS_DIR = Path(__file__).resolve().parent          # …/src
 PROJECT_ROOT = _THIS_DIR.parent                       # …/dswe-inman-lyons
 FIGURES_DIR = PROJECT_ROOT / "figures"
-REGISTRY_CSV = FIGURES_DIR / "registry.csv"
+REGISTRY_FILE = FIGURES_DIR / "registry.txt"
 
-_REGISTRY_COLUMNS = [
-    "filename",
-    "source",
-    "description",
-    "timestamp",
-    "dpi",
-    "size_bytes",
-]
+_REGISTRY_HEADER = "# timestamp | filename | dpi | size_bytes | source | description"
 
 
 def _ensure_registry() -> None:
-    """Create the figures dir and registry CSV header if they don't exist."""
+    """Create the figures dir and registry text file if they don't exist."""
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
-    if not REGISTRY_CSV.exists():
-        with open(REGISTRY_CSV, "w", newline="") as fh:
-            csv.writer(fh).writerow(_REGISTRY_COLUMNS)
+    if not REGISTRY_FILE.exists():
+        REGISTRY_FILE.write_text(_REGISTRY_HEADER + "\n")
 
 
 def _guess_source() -> str:
@@ -124,17 +115,18 @@ def save_figure(
     size = out_path.stat().st_size
     src = _relative(source) if source else _relative(_guess_source())
 
-    row = {
-        "filename": str(Path(name)),          # normalised relative path
-        "source": src,
-        "description": description,
-        "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
-        "dpi": dpi,
-        "size_bytes": size,
-    }
+    ts = _dt.datetime.now().isoformat(timespec="seconds")
+    line = " | ".join([
+        ts,
+        str(Path(name)),
+        f"{dpi} dpi",
+        f"{size:,} bytes",
+        src,
+        description,
+    ])
 
-    with open(REGISTRY_CSV, "a", newline="") as fh:
-        csv.DictWriter(fh, fieldnames=_REGISTRY_COLUMNS).writerow(row)
+    with open(REGISTRY_FILE, "a") as fh:
+        fh.write(line + "\n")
 
     print(f"Figure saved → {out_path}  ({size:,} bytes)")
     return out_path
@@ -143,5 +135,11 @@ def save_figure(
 def list_figures() -> "list[dict]":
     """Return the current registry as a list of dicts."""
     _ensure_registry()
-    with open(REGISTRY_CSV, newline="") as fh:
-        return list(csv.DictReader(fh))
+    keys = ["timestamp", "filename", "dpi", "size_bytes", "source", "description"]
+    entries = []
+    for line in REGISTRY_FILE.read_text().splitlines():
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split(" | ", maxsplit=5)]
+        entries.append(dict(zip(keys, parts)))
+    return entries

@@ -50,7 +50,7 @@ data/
   IL-OkavangoDelta_flooding-master/
                            — Inman-Lyons inundation reference dataset
 
-GRDC_station_data/         — GRDC daily discharge files (.Cmd.txt) + basin GeoJSONs
+data/GRDC_station_data/     — GRDC daily discharge files (.Cmd.txt) + basin GeoJSONs
 ```
 
 ---
