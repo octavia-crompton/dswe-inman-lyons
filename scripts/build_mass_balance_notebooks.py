@@ -58,8 +58,9 @@ GEOM_TAG = "{geom_tag}"
 FIG_DIR = Path("../figures/ET comparison") / GEOM_TAG
 FIG_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── Set False once the Earth Engine CSVs are cached in FIG_DIR ──
-RUN_EE = True
+# ── Earth Engine products: False = use the CSVs cached in FIG_DIR (computed if
+#    missing); True = force a recompute (~20 min) ──
+RUN_EE = False
 
 print(f"Window : {{START}} → {{END}}")
 print(f"Figures: {{FIG_DIR.resolve()}}")
@@ -162,7 +163,9 @@ of its month while P, ET and Q are month totals.  A single missing GRACE month i
 linearly interpolated before differencing (`fill_tws_gap_months=1`); longer
 gaps, including the 11-month GRACE/GRACE-FO gap, are never bridged.  In the
 ΔS panel, hollow markers show months whose ΔS depends on an interpolated
-month.  ET is the median of the available products each month.
+month.  ET is the median of the available products each month, used only where
+at least 4 products contribute (`min_et_products=4`); product coverage thins
+from 7–8 products through 2024 to 4 in 2025 and 3 in 2026.
 ''')
 
 
@@ -172,7 +175,8 @@ bal = assemble_balance(df_et, df_chirps, df_tws, block_area_m2_,
                        qin={"q_mohembo" if qin else "None"},
                        extra={{{extra}}},
                        start=START, ds_scheme="centered",
-                       fill_tws_gap_months=1)       # interpolate single missing GRACE months
+                       fill_tws_gap_months=1,       # interpolate single missing GRACE months
+                       min_et_products=4)         # ET median needs ≥ 4 products
 df_balance = bal.df
 print(bal.summary())
 print("\\nResidual = {eq}")
@@ -504,7 +508,9 @@ END = pd.Timestamp.today().normalize().replace(day=1).strftime("%Y-%m-%d")   # l
 GEOM_TAG = "grace_aral_sea"
 FIG_DIR = Path("../figures/ET comparison") / GEOM_TAG
 FIG_DIR.mkdir(parents=True, exist_ok=True)
-RUN_EE = True
+# ── Earth Engine products: False = use the CSVs cached in FIG_DIR (computed if
+#    missing); True = force a recompute (~20 min) ──
+RUN_EE = False
 DOMAIN_LABEL = "Aral Sea blocks"
 print(f"Window : {START} → {END}")
 '''),

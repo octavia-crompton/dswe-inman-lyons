@@ -85,7 +85,7 @@ def test_assemble_balance_median_centered_diff_and_gap():
     from src.balance import assemble_balance
     et, chirps, tws = _synthetic_inputs()
     bal = assemble_balance(et, chirps, tws, area_m2=1e11, start="2002-04-01", ds_scheme="centered",
-                           fill_tws_gap_months=0)
+                           fill_tws_gap_months=0, min_et_products=3)
     df = bal.df
     assert df.index.freqstr == "MS"
     # median of the three products, month-end product included after snapping
@@ -103,7 +103,7 @@ def test_assemble_balance_backward_diff():
     from src.balance import assemble_balance
     et, chirps, tws = _synthetic_inputs()
     bal = assemble_balance(et, chirps, tws, area_m2=1e11, start="2002-04-01", ds_scheme="backward",
-                           fill_tws_gap_months=0)
+                           fill_tws_gap_months=0, min_et_products=3)
     assert np.isclose(bal.df.loc["2002-08-01", "dS_cm"], 1.0)
     assert np.isnan(bal.df.loc["2003-07-01", "dS_cm"])       # gap not bridged
     assert np.isnan(bal.df.loc["2002-04-01", "dS_cm"])
@@ -112,7 +112,7 @@ def test_assemble_balance_backward_diff():
 def test_one_month_tws_gap_is_interpolated_longer_gap_is_not():
     from src.balance import assemble_balance
     et, chirps, tws = _synthetic_inputs()                  # single-month gap at 2003-06
-    bal = assemble_balance(et, chirps, tws, area_m2=1e11, start="2002-04-01")   # default: fill 1
+    bal = assemble_balance(et, chirps, tws, area_m2=1e11, start="2002-04-01", min_et_products=3)   # default: fill 1
     df = bal.df
     assert bal.tws_fill_months == 1
     assert df.loc["2003-06-01", "TWS_filled"] and df["TWS_filled"].sum() == 1
@@ -123,10 +123,26 @@ def test_one_month_tws_gap_is_interpolated_longer_gap_is_not():
     assert not df.loc["2002-08-01", "dS_uses_filled_tws"]
     # a two-month gap is left alone
     tws2 = tws.drop(pd.Timestamp("2003-07-01"))
-    df2 = assemble_balance(et, chirps, tws2, area_m2=1e11, start="2002-04-01").df
+    df2 = assemble_balance(et, chirps, tws2, area_m2=1e11, start="2002-04-01", min_et_products=3).df
     assert not df2["TWS_filled"].any()
     assert df2.loc["2003-06-01":"2003-07-01", "TWS_cm"].isna().all()
     assert np.isnan(df2.loc["2003-05-01", "dS_cm"]) and np.isnan(df2.loc["2003-08-01", "dS_cm"])
+
+
+def test_et_median_requires_minimum_number_of_products():
+    from src.balance import assemble_balance
+    et, chirps, tws = _synthetic_inputs()                  # 3 products everywhere ...
+    et = et[~((et["dataset"] == "C") & (et["date"] >= "2003-10-01"))]   # ... but only 2 from Oct 2003
+    bal = assemble_balance(et, chirps, tws, area_m2=1e11, start="2002-04-01", min_et_products=3)
+    df = bal.df
+    assert bal.min_et_products == 3
+    assert df.loc["2003-09-01", "n_et_products"] == 3 and np.isclose(df.loc["2003-09-01", "ET_km3"], 2.0)
+    assert df.loc["2003-10-01", "n_et_products"] == 2
+    assert np.isnan(df.loc["2003-10-01", "ET_km3"]) and df.loc["2003-10-01", "et_too_few_products"]
+    assert not df.loc["2003-10-01", "has_closure"] and np.isnan(df.loc["2003-10-01", "resid_km3"])
+    assert df["et_too_few_products"].sum() == 6                        # Oct 2003 – Mar 2004
+    # default guard (4) with 3 products drops every month
+    assert assemble_balance(et, chirps, tws, area_m2=1e11, start="2002-04-01").df["ET_km3"].isna().all()
 
 
 def test_fit_lateral_recovers_alpha_and_intercept():

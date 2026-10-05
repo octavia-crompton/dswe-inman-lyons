@@ -19,6 +19,10 @@ Conventions
   gaps, such as the 11-month GRACE/GRACE-FO gap, are never bridged.  Filled
   months are flagged in ``TWS_filled``, and ``dS_uses_filled_tws`` marks every
   storage change that depends on one.
+* ET is the median of the products available each month, but only when at
+  least ``min_et_products`` contribute (default 4); with fewer, ET and the
+  residual are NaN and the month is not a closure month.  Product coverage
+  thins late in the record (7–8 products to 2024, 4 in 2025, 3 in 2026).
 * Residual: ``resid = Qin + P − ET − dS`` (Qin = 0 when no gauge is given).
   For the delta this is the unmeasured net outflow + storage-model error;
   for a closed dry cell it should be ~0.
@@ -62,6 +66,7 @@ class Balance:
     has_qin: bool
     extra_cols: list[str] = field(default_factory=list)
     tws_fill_months: int = 0
+    min_et_products: int = 1
 
     @property
     def flux_cols(self) -> list[str]:
@@ -79,6 +84,8 @@ class Balance:
                  f"TWS gaps ≤ {self.tws_fill_months} month interpolated: "
                  f"{int(self.df['TWS_filled'].sum())} months "
                  f"({int(self.df['dS_uses_filled_tws'].sum())} ΔS months depend on them)",
+                 f"ET median requires ≥ {self.min_et_products} products: "
+                 f"{int(self.df['et_too_few_products'].sum())} months with ET data dropped",
                  "Mean over closure months (mm/month):"]
         for c, lab in [("P_mm", "P"), ("ET_mm", "ET"), ("dS_mm", "ΔS"), ("Qin_mm", "Qin"), ("resid_mm", "resid")]:
             if c in d:
@@ -97,6 +104,7 @@ def assemble_balance(
     end: str | None = None,
     ds_scheme: str = "centered",
     fill_tws_gap_months: int = 1,
+    min_et_products: int = 4,
 ) -> Balance:
     """Build the monthly balance table.
 
@@ -111,6 +119,8 @@ def assemble_balance(
         carry along on the same grid.
     fill_tws_gap_months : interpolate storage gaps of at most this many
         consecutive months before differencing (0 disables).
+    min_et_products : the ET median is used only in months where at least this
+        many products contribute; otherwise ET (and the residual) are NaN.
     """
     if ds_scheme not in ("centered", "backward"):
         raise ValueError("ds_scheme must be 'centered' or 'backward'")
@@ -141,6 +151,10 @@ def assemble_balance(
     df = df.reindex(grid)
     df.index.name = "date"
 
+    too_few = df["ET_km3"].notna() & (df["n_et_products"] < min_et_products)
+    df.loc[too_few, ["ET_mm", "ET_km3"]] = np.nan
+    df["et_too_few_products"] = too_few
+
     df["TWS_filled"] = False
     for col in ("TWS_cm", "TWS_km3"):
         df[col], filled = _fill_short_gaps(df[col], fill_tws_gap_months)
@@ -167,7 +181,7 @@ def assemble_balance(
 
     return Balance(df=df, et_km3_wide=et_km3.reindex(grid), et_mm_wide=et_mm.reindex(grid),
                    area_m2=area_m2, ds_scheme=ds_scheme, has_qin=has_qin, extra_cols=extra_cols,
-                   tws_fill_months=fill_tws_gap_months)
+                   tws_fill_months=fill_tws_gap_months, min_et_products=min_et_products)
 
 
 def _fill_short_gaps(s: pd.Series, max_gap: int) -> tuple[pd.Series, pd.Series]:
@@ -211,6 +225,7 @@ def write_outputs(bal: Balance, fig_dir, geom_tag: str, blocks, qin: pd.DataFram
         fh.write(f"area_km2 = {bal.area_m2 / 1e6:.1f}\n")
         fh.write(f"dS_scheme = {bal.ds_scheme}\n")
         fh.write(f"tws_fill_gap_months = {bal.tws_fill_months}\n")
+        fh.write(f"min_et_products = {bal.min_et_products}\n")
         fh.write(f"n_blocks = {len(blocks)}\n")
         for b in blocks:
             fh.write(f"  {b['block_id']} ({b['quadrant']}): lon {b['lon0']:.2f}–{b['lon1']:.2f}, "
