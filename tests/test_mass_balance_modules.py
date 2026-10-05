@@ -150,11 +150,56 @@ def test_fit_lateral_bounds():
     assert fit["alpha"][0] <= 0.0 + 1e-9
 
 
+def test_period_rules_for_sub_monthly_composites():
+    import datetime as dt
+    from src.ee_monthly import period_end_8day, period_end_dekad, period_end_month, overlap_days
+    jan29 = dt.datetime(2019, 1, 29)
+    assert period_end_8day(jan29) == dt.datetime(2019, 2, 6)
+    assert overlap_days(jan29, period_end_8day(jan29), dt.datetime(2019, 1, 1), dt.datetime(2019, 2, 1)) == 3
+    assert overlap_days(jan29, period_end_8day(jan29), dt.datetime(2019, 2, 1), dt.datetime(2019, 3, 1)) == 5
+    # last composite of the year (DOY 361) stops at 1 January
+    assert period_end_8day(dt.datetime(2019, 12, 27)) == dt.datetime(2020, 1, 1)
+    assert period_end_8day(dt.datetime(2020, 12, 26)) == dt.datetime(2021, 1, 1)      # leap year: 6 days
+    # WaPOR dekads: 1-10, 11-20, 21-end of month
+    assert period_end_dekad(dt.datetime(2019, 1, 1)) == dt.datetime(2019, 1, 11)
+    assert period_end_dekad(dt.datetime(2019, 1, 11)) == dt.datetime(2019, 1, 21)
+    assert period_end_dekad(dt.datetime(2019, 1, 21)) == dt.datetime(2019, 2, 1)       # 11 days
+    assert period_end_dekad(dt.datetime(2019, 2, 21)) == dt.datetime(2019, 3, 1)       # 8 days
+    assert period_end_dekad(dt.datetime(2019, 12, 21)) == dt.datetime(2020, 1, 1)
+    assert period_end_month(dt.datetime(2019, 12, 1)) == dt.datetime(2020, 1, 1)
+    # month count is exact (Earth Engine's fractional month difference dropped the last month)
+    from src.ee_monthly import n_months
+    assert n_months("2019-01-01", "2020-01-01") == 12
+    assert n_months("2002-04-01", "2026-10-01") == 294
+    assert n_months("2003-01-01", "2003-01-01") == 0
+
+
+def test_prorate_month_uses_mean_daily_rate_and_masks_partial_months():
+    from src.ee_monthly import prorate_month
+    rates = [1.0, 2.0, 3.0, 4.0, 5.0]
+    days = [5, 8, 8, 8, 2]                      # five composites overlapping a 31-day month
+    expected = sum(r * d for r, d in zip(rates, days)) / 31 * 31
+    assert np.isclose(prorate_month(rates, days, 31), expected)
+    # one masked composite: the remaining ones are scaled up to the full month
+    rates_m = [1.0, 2.0, 3.0, 4.0, np.nan]
+    exp_m = (1 * 5 + 2 * 8 + 3 * 8 + 4 * 8) / 29 * 31
+    assert np.isclose(prorate_month(rates_m, days, 31), exp_m)
+    # ... unless that drops coverage below 75 % of the month (23 of 31 days)
+    assert np.isnan(prorate_month([1.0, np.nan, 3.0, 4.0, 5.0], days, 31))
+    # too little coverage → NaN (e.g. the partial month at the end of a record)
+    assert np.isnan(prorate_month([2.0, 2.0], [8, 8], 31))               # 16 of 31 days < 75 %
+    assert np.isclose(prorate_month([2.0, 2.0, 2.0], [8, 8, 8], 31), 62) # 24 of 31 days ≥ 75 %
+    # a monthly product: one image, full overlap, unchanged
+    assert np.isclose(prorate_month([3.0], [30], 30), 90.0)
+
+
 def test_totals_to_df_handles_masked_months_and_coverage():
     from src.ee_monthly import totals_to_df
     totals = {"200201": {"m3": 1e9, "area": 1e9}, "200202": {"m3": None, "area": None},
               "200203": {"m3": 1e8, "area": 1e8}}
     df = totals_to_df(totals, "X", area_m2=1e9, prefix="et", min_coverage=0.5)
     assert np.isclose(df.loc[df.date == "2002-01-01", "et_mm_mean"].item(), 1000.0)
+    assert np.isclose(df.loc[df.date == "2002-01-01", "et_km3_total"].item(), 1.0)   # 1 m over 1e9 m²
+    assert np.isclose(df.loc[df.date == "2002-01-01", "coverage"].item(), 1.0)
     assert np.isnan(df.loc[df.date == "2002-02-01", "et_mm_mean"].item())
     assert np.isnan(df.loc[df.date == "2002-03-01", "et_mm_mean"].item())     # coverage 0.1 < 0.5

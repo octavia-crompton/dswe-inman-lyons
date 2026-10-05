@@ -51,7 +51,7 @@ assert DELTA_SHP.exists() and GRACE_NC.exists()
 
 # ── Time window ──
 START = "2002-04-01"                      # GRACE begins April 2002
-END = (pd.Timestamp.today().normalize() + pd.offsets.MonthBegin(1)).strftime("%Y-%m-%d")
+END = pd.Timestamp.today().normalize().replace(day=1).strftime("%Y-%m-%d")   # last complete month
 
 # ── Output ──
 GEOM_TAG = "{geom_tag}"
@@ -500,7 +500,7 @@ aral_poly = shapely_box(ARAL_LON_MIN, ARAL_LAT_MIN, ARAL_LON_MAX, ARAL_LAT_MAX)
 MIN_OVERLAP = 0.10          # keep blocks covering ≥ 10 % of the bbox
 
 START = "2002-04-01"
-END = (pd.Timestamp.today().normalize() + pd.offsets.MonthBegin(1)).strftime("%Y-%m-%d")
+END = pd.Timestamp.today().normalize().replace(day=1).strftime("%Y-%m-%d")   # last complete month
 GEOM_TAG = "grace_aral_sea"
 FIG_DIR = Path("../figures/ET comparison") / GEOM_TAG
 FIG_DIR.mkdir(parents=True, exist_ok=True)

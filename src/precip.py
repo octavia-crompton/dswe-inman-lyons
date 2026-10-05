@@ -21,7 +21,8 @@ def ee_chirps_monthly(region, area_m2: float, start: str, end: str,
                       scale_m: float = 5566, min_coverage: float = 0.5) -> pd.DataFrame:
     import ee
     daily = ee.ImageCollection(CHIRPS_ID).filterBounds(region).filterDate(start, end)
-    mic = make_monthly_ic(daily, lambda img: img.select("precipitation"), start, end)
+    mic = make_monthly_ic(daily, lambda img: img.select("precipitation"), start, end,
+                          period="day", is_rate=True)       # mm/day → pro-rated month total
     totals = reduce_monthly_chunked(mic, region, scale_m=scale_m, chunk_months=60)
     df = totals_to_df(totals, "CHIRPS_monthly", area_m2, prefix="ppt", min_coverage=min_coverage)
     ok = df["ppt_mm_mean"].notna()

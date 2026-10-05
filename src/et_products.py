@@ -29,7 +29,7 @@ GLEAM_NAME = "GLEAM_v42a"
 # Converters (native time step → mm for that image)
 # ---------------------------------------------------------------------------
 def mod16_mm(img):
-    return img.select("ET").multiply(0.1)              # kg m-2 per 8 days, scale 0.1
+    return img.select("ET").multiply(0.1)              # kg m-2 over the 8-day composite, scale 0.1
 
 
 def terraclimate_mm(img):
@@ -47,35 +47,37 @@ def era5_land_mm(img):
     return img.select("total_evaporation_sum").multiply(-1000)   # m (negative) → mm
 
 
-def pml_mm(img):
-    return img.select("ET").multiply(0.01).multiply(8)  # mm/day ×0.01, 8-day composite
+def pml_mm_per_day(img):
+    return img.select("ET").multiply(0.01)             # mm/day (scale 0.01); 8-day composites
 
 
-def wapor_mm(img):
-    import ee
-    d0 = ee.Date(img.get("system:time_start"))
-    d1_cand = d0.advance(10, "day")
-    m_end = ee.Date.fromYMD(d0.get("year"), d0.get("month"), 1).advance(1, "month")
-    d1 = ee.Date(ee.Algorithms.If(d1_cand.millis().lte(m_end.millis()), d1_cand, m_end))
-    return img.select("L1-AETI-D").multiply(0.1).multiply(d1.difference(d0, "day"))
+def wapor_mm_per_day(img):
+    return img.select("L1-AETI-D").multiply(0.1)       # average mm/day over the dekad (scale 0.1)
 
 
 def ssebop_mm(img):
     return img.select("et")
 
 
+# ``period`` is the image time step (see ee_monthly), ``is_rate`` says whether
+# ``to_mm`` returns mm/day (True) or the total over the image's period (False).
+# Sub-monthly products are pro-rated into calendar months by ee_monthly.
 DATASETS: list[dict] = [
-    dict(name="MOD16A2GF_v61",   id="MODIS/061/MOD16A2GF", to_mm=mod16_mm, scale=500, start="2000-01-01"),
+    dict(name="MOD16A2GF_v61",   id="MODIS/061/MOD16A2GF", to_mm=mod16_mm, period="8day", is_rate=False,
+         scale=500, start="2000-01-01"),
     dict(name="PML_v2_landET",    id="projects/pml_evapotranspiration/PML/OUTPUT/PML_V22a",
-         to_mm=pml_mm, scale=500, start="2000-01-01"),
-    dict(name="TerraClimate_aet", id="IDAHO_EPSCOR/TERRACLIMATE", to_mm=terraclimate_mm, scale=4638, start="1958-01-01"),
-    dict(name="FLDAS_Evap",       id="NASA/FLDAS/NOAH01/C/GL/M/V001", to_mm=fldas_mm, scale=11132, start="1982-01-01"),
-    dict(name="ERA5Land_totalET", id="ECMWF/ERA5_LAND/MONTHLY_AGGR", to_mm=era5_land_mm, scale=11132, start="1950-02-01"),
+         to_mm=pml_mm_per_day, period="8day", is_rate=True, scale=500, start="2000-01-01"),
+    dict(name="TerraClimate_aet", id="IDAHO_EPSCOR/TERRACLIMATE", to_mm=terraclimate_mm, period="month",
+         is_rate=False, scale=4638, start="1958-01-01"),
+    dict(name="FLDAS_Evap",       id="NASA/FLDAS/NOAH01/C/GL/M/V001", to_mm=fldas_mm, period="month",
+         is_rate=False, scale=11132, start="1982-01-01"),
+    dict(name="ERA5Land_totalET", id="ECMWF/ERA5_LAND/MONTHLY_AGGR", to_mm=era5_land_mm, period="month",
+         is_rate=False, scale=11132, start="1950-02-01"),
     dict(name="USGS_SSEBop",
          id="projects/earthengine-legacy/assets/projects/usgs-ssebop/modis_et_v5_monthly",
-         to_mm=ssebop_mm, scale=1000, start="2003-01-01"),
-    dict(name="WaPORv3_AETI",     id="FAO/WAPOR/3/L1_AETI_D", to_mm=wapor_mm, scale=248, start="2018-01-01",
-         africa_only=True),
+         to_mm=ssebop_mm, period="month", is_rate=False, scale=1000, start="2003-01-01"),
+    dict(name="WaPORv3_AETI",     id="FAO/WAPOR/3/L1_AETI_D", to_mm=wapor_mm_per_day, period="dekad",
+         is_rate=True, scale=248, start="2018-01-01", africa_only=True),
 ]
 
 
@@ -92,7 +94,8 @@ def ee_et_products(region, area_m2: float, start: str, end: str,
         if pd.to_datetime(ds_start) >= pd.to_datetime(end):
             continue
         ic = ee.ImageCollection(ds["id"]).filterBounds(region).filterDate(ds_start, end)
-        mic = make_monthly_ic(ic, ds["to_mm"], ds_start, end)
+        mic = make_monthly_ic(ic, ds["to_mm"], ds_start, end,
+                              period=ds.get("period", "month"), is_rate=ds.get("is_rate", False))
         totals = reduce_monthly_chunked(mic, region, scale_m=ds["scale"])
         df = totals_to_df(totals, ds["name"], area_m2, prefix="et", min_coverage=min_coverage)
         if verbose:
@@ -112,13 +115,15 @@ def gleam_files(gleam_dir: str | Path = GLEAM_DIR) -> list[Path]:
 
 
 def gleam_et_over_geometry(files: Sequence[Path], geom, start: str, end: str,
-                           name: str = GLEAM_NAME, min_coverage: float = 0.5) -> pd.DataFrame:
+                           name: str = GLEAM_NAME, min_coverage: float = 0.5,
+                           area_m2: float | None = None) -> pd.DataFrame:
     """Monthly GLEAM ET over a shapely geometry (pixel-centre-in-polygon mask).
 
     Dates are snapped to **month start** (GLEAM stamps months at month end).
-    ``et_mm_mean`` is the mean over valid (non-NaN) pixels in the mask,
-    ``et_km3_total`` scales it to the full mask area, ``coverage`` is the
-    valid-area fraction.
+    ``et_mm_mean`` is the mean over valid (non-NaN) pixels in the mask;
+    ``et_km3_total`` scales it to ``area_m2`` when given (the geodesic domain
+    area, the same basis as the Earth Engine products), otherwise to the
+    pixel-mask area; ``coverage`` is the valid fraction of the mask area.
     """
     from shapely import contains_xy
 
@@ -144,6 +149,7 @@ def gleam_et_over_geometry(files: Sequence[Path], geom, start: str, end: str,
     lon_grid, lat_grid = np.meshgrid(lons, lats)
     mask = contains_xy(geom, lon_grid, lat_grid)
     total_area = float(area_2d[mask].sum())
+    volume_area = float(area_m2) if area_m2 else total_area
 
     vals_all = da.values
     times = pd.to_datetime(da["time"].values).to_period("M").to_timestamp()
@@ -160,7 +166,7 @@ def gleam_et_over_geometry(files: Sequence[Path], geom, start: str, end: str,
             if cov < min_coverage:
                 mm = np.nan
         rows.append({"dataset": name, "date": times[t], "et_mm_mean": mm,
-                     "et_km3_total": mm / 1000.0 * total_area / 1e9, "coverage": cov})
+                     "et_km3_total": mm / 1000.0 * volume_area / 1e9, "coverage": cov})
     da.close()
     df = pd.DataFrame(rows)
     df = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] < pd.Timestamp(end))]
@@ -189,7 +195,8 @@ def compute_et_products(region, area_m2: float, start: str, end: str,
         if gleam_geom is not None:
             files = gleam_files()
             if files:
-                dg = gleam_et_over_geometry(files, gleam_geom, start, end, min_coverage=min_coverage)
+                dg = gleam_et_over_geometry(files, gleam_geom, start, end, min_coverage=min_coverage,
+                                            area_m2=area_m2)
                 print(f"{GLEAM_NAME:18s}: {dg['et_mm_mean'].notna().sum():3d} valid months")
                 df = pd.concat([df, dg], ignore_index=True)
             else:
