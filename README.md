@@ -18,6 +18,9 @@ src/
   okavango_fronts.py    — Core analysis library: wet/dry front detection, front-normal
                           velocity, channel-parallel velocity, regional composites
   figures.py            — Shared figure saving utilities (registry-based)
+  grace_blocks.py, et_products.py, ee_monthly.py, precip.py, discharge.py,
+  balance.py, lateral_flux.py, balance_plots.py, cache.py
+                        — GRACE mass-balance pipeline (see docs/mass_balance.md)
 
 notebooks/
   CYGNSS Okavango – Front-Normal Velocity.ipynb
@@ -28,6 +31,12 @@ notebooks/
   GRDC timeseries.ipynb — GRDC station discharge time series
   Mohembo time series.ipynb
                         — Mohembo gauge analysis and comparison with remote sensing
+  mass_balance_grace_{aligned,2east,1block_ne,dry_control,aral_sea}.ipynb
+                        — Monthly water budget Qin + P − ET − ΔS over GRACE mascon
+                          blocks (see docs/mass_balance.md)
+  flood_prediction_okavango.ipynb
+                        — Monthly and annual discharge prediction from remote-sensing
+                          predictors, scored against seasonal / climatology baselines
   dswe_IL_compare.ipynb — DSWE vs. Inman-Lyons inundation product comparison
   dswe_image_export.ipynb
                         — Export DSWE-derived rasters from GEE
@@ -75,6 +84,15 @@ earthengine authenticate
 gcloud auth login
 gcloud auth application-default login
 ```
+
+---
+
+## Key analysis: GRACE mass balance
+
+`docs/mass_balance.md` describes the monthly water budget `Qin + P − ET − ΔS`
+over JPL mascon blocks: the five notebooks, the `src/` modules behind them, the
+conventions chosen (GRACE from the local netCDF, centred ΔS, pro-rated ET
+composites, ≥ 4-product ET median) and the known limitations.
 
 ---
 

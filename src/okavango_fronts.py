@@ -55,14 +55,16 @@ def _choose_spatial_dims(obj):
     return y_dim, x_dim
 
 
-def _collect_channel_samples(gdf_m: gpd.GeoDataFrame, step_m: float, apex_xy: np.ndarray | None):
+def _collect_channel_samples(gdf_m: gpd.GeoDataFrame, step_m: float, apex_xy: np.ndarray | None,
+                             return_line_ids: bool = False):
     """
     Densify all lines and return arrays of sample point coords and unit tangents.
-    Returns: xs, ys, txs, tys  (all 1D np.ndarrays)
+    Returns: xs, ys, txs, tys  (all 1D np.ndarrays); with ``return_line_ids`` also
+    ``lids``, the positional row index in ``gdf_m`` of each sample's line.
     """
-    xs, ys, txs, tys = [], [], [], []
+    xs, ys, txs, tys, lids = [], [], [], [], []
 
-    for geom in gdf_m.geometry:
+    for row_pos, geom in enumerate(gdf_m.geometry):
         if geom is None:
             continue
         # Iterate over LineStrings
@@ -89,10 +91,12 @@ def _collect_channel_samples(gdf_m: gpd.GeoDataFrame, step_m: float, apex_xy: np
             ys.extend(xy[valid, 1])
             txs.extend(t[valid, 0])
             tys.extend(t[valid, 1])
+            lids.extend([row_pos] * int(valid.sum()))
 
     if len(xs) == 0:
         raise ValueError("No valid line samples found in channel GeoDataFrame.")
-    return np.asarray(xs), np.asarray(ys), np.asarray(txs), np.asarray(tys)
+    out = (np.asarray(xs), np.asarray(ys), np.asarray(txs), np.asarray(tys))
+    return out + (np.asarray(lids),) if return_line_ids else out
 
 
 def _densify_line(line: LineString, step_m: float) -> Tuple[np.ndarray, np.ndarray]:
@@ -623,10 +627,29 @@ def front_normal_velocity(
     bandwidth: float = 0.05,            # +/- band around front_value
     grad_quantile: float = 0.90,        # keep top q gradient as "front" if front_value is None
     smooth_px: int = 0,                 # optional rolling mean window (pixels) to stabilize grads
-    grad_eps: float = 1e-12
+    grad_eps: float = 1e-12,
+    time_window_days: float | None = None,  # average F over ±window/2 days around t1 and t2
+    min_grad_per_px: float = 0.05,      # drop pixels where |∇F| < this (in F units per pixel)
 ) -> xr.Dataset:
     """
     Compute front-normal velocity field between two dates for a (time, y, x) DataArray.
+
+    ``F`` should be a *continuous* wetness field (0–1).  For a binary daily mask,
+    pass ``time_window_days`` (e.g. 10) so that F1/F2 are the fraction of days wet
+    in a window centred on each date, or pass monthly-mean fields.  On a raw 0/1
+    mask the level-set formula collapses to multiples of one pixel per Δt.
+
+    ``min_grad_per_px`` is a physical floor on the front sharpness: pixels whose
+    gradient is below this many F-units per pixel are not treated as front, which
+    prevents 1/|∇F| from exploding on nearly flat parts of a fractional field.
+
+    Accuracy condition: the level-set formula linearises F in time, so the front
+    displacement between t1 and t2 must be small compared with the width of the
+    smoothed transition.  Both scale with the front speed, so the condition is
+    simply ``Δt ≲ time_window_days / 3``; on a synthetic front, window 30 d with
+    Δt = 10 d recovers the true speed exactly, while Δt = window overestimates it
+    by ~1.5× and Δt = 1.5 × window by ~4×.  A warning is issued when Δt exceeds
+    half the window.
 
     Returns a Dataset with:
     - v_normal (m/day): speed perpendicular to the front (sign indicates direction)
@@ -638,14 +661,31 @@ def front_normal_velocity(
 
     time_dim, y_dim, x_dim = _choose_dims(da)
 
-    F1 = da.sel({time_dim: pd.to_datetime(t1)}, method="nearest")
-    F2 = da.sel({time_dim: pd.to_datetime(t2)}, method="nearest")
-    t1_real = pd.to_datetime(F1[time_dim].item())
-    t2_real = pd.to_datetime(F2[time_dim].item())
+    if time_window_days:
+        half = pd.Timedelta(days=float(time_window_days) / 2)
+        F1 = da.sel({time_dim: slice(pd.to_datetime(t1) - half, pd.to_datetime(t1) + half)})
+        F2 = da.sel({time_dim: slice(pd.to_datetime(t2) - half, pd.to_datetime(t2) + half)})
+        if F1.sizes[time_dim] == 0 or F2.sizes[time_dim] == 0:
+            raise ValueError("No data inside the averaging window around t1 or t2.")
+        n1, n2 = F1.sizes[time_dim], F2.sizes[time_dim]
+        F1 = F1.mean(time_dim, skipna=True)
+        F2 = F2.mean(time_dim, skipna=True)
+        t1_real, t2_real = pd.to_datetime(t1), pd.to_datetime(t2)
+    else:
+        F1 = da.sel({time_dim: pd.to_datetime(t1)}, method="nearest")
+        F2 = da.sel({time_dim: pd.to_datetime(t2)}, method="nearest")
+        t1_real = pd.to_datetime(F1[time_dim].item())
+        t2_real = pd.to_datetime(F2[time_dim].item())
+        n1 = n2 = 1
     if t1_real == t2_real:
         raise ValueError("The two dates resolve to the same snapshot; choose different dates.")
 
     dt_days = (t2_real - t1_real) / pd.Timedelta(days=1)
+    if time_window_days and dt_days > float(time_window_days) / 2:
+        import warnings
+        warnings.warn(f"front_normal_velocity: Δt = {dt_days:.0f} d exceeds half the averaging window "
+                      f"({time_window_days} d); the level-set speed will be biased high. "
+                      "Use a shorter Δt or a longer window.", stacklevel=2)
 
     # Optional smoothing to stabilize spatial gradients (box/rolling; avoids SciPy dependency)
     def _smooth2(F):
@@ -689,8 +729,10 @@ def front_normal_velocity(
         thresh = np.nanquantile(grad_mag, grad_quantile)
         band = grad_mag >= thresh
 
-    # Also require non-tiny gradients where division is well-conditioned
-    band &= grad_mag > (np.nanmedian(grad_mag) * 1e-3)
+    # Require a physically meaningful front sharpness: |∇F| ≥ min_grad_per_px (F units per pixel)
+    lat_1d, _ = _latlon_1d(Fmid, y_dim, x_dim)
+    px_m = float(np.median(np.abs(np.diff(lat_1d)))) * 111_132.0
+    band &= grad_mag >= (min_grad_per_px / px_m)
 
     # Pack into Dataset with coords/attrs
     ds = xr.Dataset(
@@ -709,6 +751,9 @@ def front_normal_velocity(
             "t1": str(t1_real),
             "t2": str(t2_real),
             "delta_days": float(dt_days),
+            "time_window_days": float(time_window_days or 0),
+            "n_steps_averaged": f"{n1},{n2}",
+            "min_grad_per_px": float(min_grad_per_px),
             "method": "level-set normal velocity v_n = -(dF/dt)/|∇F| using mid-snapshot gradients"
         }
     )
@@ -747,6 +792,7 @@ def front_normal_velocity_monthly_climatology(
     grad_eps: float = 1e-12,
     weight_by_dt: bool = False,        # if True, weight each pair's contribution by its Δt (days)
     max_gap_days: float | None = None, # ignore pairs with Δt > this (e.g., large gaps); None = keep all
+    min_grad_per_px: float = 0.05,
 ) -> xr.Dataset:
     """
     Build a monthly (1..12) multi-year composite of front-normal velocity from a time-lat-lon DataArray.
@@ -793,7 +839,8 @@ def front_normal_velocity_monthly_climatology(
             bandwidth=bandwidth,
             grad_quantile=grad_quantile,
             smooth_px=smooth_px,
-            grad_eps=grad_eps
+            grad_eps=grad_eps,
+            min_grad_per_px=min_grad_per_px,
         )
         # Pull arrays
         vn = ds["v_normal"].values     # (y,x), NaN where not front/invalid
@@ -940,6 +987,119 @@ def front_speed_along_channels(
     # Also provide lon/lat geometry for web maps if you prefer
     out["geometry_wgs84"] = out.to_crs(epsg=4326).geometry
     return out
+
+
+def load_osm_channels(
+    waterways_shp: str | Path,
+    clip_geom=None,
+    fclass: tuple = ("river",),
+    named_only: bool = False,
+    exclude_names: tuple = (),
+    min_length_km: float = 0.0,
+) -> gpd.GeoDataFrame:
+    """
+    Channel network from a Geofabrik OSM ``gis_osm_waterways_free_1.shp`` extract.
+
+    Keeps features of the given ``fclass`` values (``river`` = named channels and
+    distributaries; add ``"stream"`` for minor channels), optionally only named
+    ones, clipped to ``clip_geom`` (a shapely geometry in EPSG:4326, e.g. the
+    delta polygon, usually buffered a little).  Returns a GeoDataFrame in
+    EPSG:4326 with one LineString per row (MultiLineStrings are exploded) and the
+    columns ``osm_id, fclass, name, length_km``.
+
+    This replaces the HydroSHEDS free-flowing-rivers layer, whose flow-direction
+    artifacts on the flat delta produce combs of straight parallel "channels".
+    """
+    gdf = gpd.read_file(waterways_shp)
+    if gdf.crs is None:
+        gdf = gdf.set_crs(4326)
+    gdf = gdf.to_crs(4326)
+    gdf = gdf[gdf["fclass"].isin(fclass)]
+    if named_only:
+        gdf = gdf[gdf["name"].notna()]
+    if exclude_names:
+        gdf = gdf[~gdf["name"].isin(exclude_names)]
+    if clip_geom is not None:
+        gdf = gdf[gdf.intersects(clip_geom)].copy()
+        gdf["geometry"] = gdf.geometry.intersection(clip_geom)
+    gdf = gdf[~gdf.geometry.is_empty].explode(index_parts=False)
+    gdf = gdf[gdf.geom_type == "LineString"].copy()
+    minx, miny, maxx, maxy = gdf.total_bounds
+    gdf["length_km"] = gdf.to_crs(_local_utm_epsg((miny + maxy) / 2, (minx + maxx) / 2)).length / 1000.0
+    gdf = gdf[gdf["length_km"] >= min_length_km]
+    return gdf[["osm_id", "fclass", "name", "length_km", "geometry"]].reset_index(drop=True)
+
+
+def load_cygnss_stack(path: str | Path, var: str | None = None,
+                      chunks: dict | None = None) -> xr.DataArray:
+    """
+    Open the merged daily CYGNSS water-mask stack as a (time, lat, lon) DataArray.
+
+    ``path`` may be a single netCDF or a directory of per-file netCDFs (opened
+    with ``open_mfdataset`` and concatenated along time).  Dimensions are
+    normalised to ``time, lat, lon``, time is sorted and de-duplicated.
+    """
+    path = Path(path)
+    if path.is_dir():
+        ds = xr.open_mfdataset(sorted(path.glob("*.nc")), combine="by_coords", chunks=chunks)
+    else:
+        ds = xr.open_dataset(path, chunks=chunks)
+    lat_name, lon_name = _find_lat_lon_names(ds)
+    varname = var or _pick_var_with_latlon(ds, lat_name, lon_name)
+    da = ds[varname]
+    time_name = next((d for d in da.dims if d.lower() == "time"), None)
+    if time_name is None:
+        raise ValueError(f"{path}: variable {varname!r} has no time dimension")
+    da = _normalize_dims(da, time_name, lat_name, lon_name).sortby("time")
+    if np.issubdtype(da.time.dtype, np.datetime64):
+        _, keep = np.unique(da.time.values, return_index=True)
+        if len(keep) != da.sizes["time"]:
+            da = da.isel(time=np.sort(keep))
+    return da
+
+
+def edge_mean(da: xr.DataArray, t, days: int = 10, side: str = "after") -> xr.DataArray:
+    """Mean of the ``days`` daily fields starting at (``after``) or ending at (``before``) ``t``."""
+    t = pd.Timestamp(t)
+    sl = slice(t, t + pd.Timedelta(days=days - 1)) if side == "after" else slice(t - pd.Timedelta(days=days - 1), t)
+    return da.sel(time=sl).mean("time", skipna=True)
+
+
+def expansion_contraction(da: xr.DataArray, t1, t2, front_value: float = 0.5, edge_days: int = 10) -> xr.DataArray:
+    """
+    Sign map of inundation change between two dates: +1 where the ``edge_days``
+    mean after ``t1`` is dry and the mean before ``t2`` is wet (expansion), −1
+    for the reverse (contraction), 0 unchanged.
+    """
+    early = edge_mean(da, t1, days=edge_days, side="after")
+    late = edge_mean(da, t2, days=edge_days, side="before")
+    return (late >= front_value).astype("i1") - (early >= front_value).astype("i1")
+
+
+def plot_fnv_panels(da: xr.DataArray, windows, titles=None, *, quantile: float = 98,
+                    suptitle: str | None = None, **fnv_kw):
+    """
+    One row of front-normal-velocity maps, one per ``(t1, t2)`` window, on a shared
+    symmetric colour scale (blue = water advancing, red = retreating).
+    Returns the figure and the list of velocity Datasets.
+    """
+    out = [front_normal_velocity(da, t1, t2, **fnv_kw) for t1, t2 in windows]
+    titles = titles or [f"{d.attrs['t1'][:10]} → {d.attrs['t2'][:10]}" for d in out]
+    norm, _ = two_slope_norm_safe(np.concatenate([d["v_normal"].values.ravel() for d in out]), quantile=quantile)
+    fig, axes = plt.subplots(1, len(out), figsize=(5 * len(out), 5), sharex=True, sharey=True,
+                             constrained_layout=True)
+    for ax, d, title in zip(np.atleast_1d(axes), out, titles):
+        im = d["v_normal"].plot(ax=ax, cmap="RdBu_r", norm=norm, add_colorbar=False)
+        ax.set_title(title)
+        ax.set_xlabel("lon")
+        ax.set_ylabel("")
+        ax.set_aspect("equal")
+    np.atleast_1d(axes)[0].set_ylabel("lat")
+    cbar = fig.colorbar(im, ax=axes, pad=0.02, shrink=0.9)
+    cbar.set_label("front-normal velocity (m/day)\nblue = water advancing, red = retreating")
+    if suptitle:
+        fig.suptitle(suptitle)
+    return fig, out
 
 
 def make_region_masks(lat: xr.DataArray, lon: xr.DataArray, polygons: list) -> tuple:
@@ -1283,7 +1443,8 @@ def velocity_parallel_to_nearest_channel_field(
         apex_xy = np.array([ax, ay], dtype=float)
 
     # Densify channels and collect sample tangents
-    xs, ys, txs, tys = _collect_channel_samples(gdf_m, step_m=sample_spacing_m, apex_xy=apex_xy)
+    xs, ys, txs, tys, lids = _collect_channel_samples(gdf_m, step_m=sample_spacing_m, apex_xy=apex_xy,
+                                                      return_line_ids=True)
 
     # --- nearest neighbor search (KD-tree) ---
     pts = np.column_stack([xs, ys])
@@ -1318,6 +1479,7 @@ def velocity_parallel_to_nearest_channel_field(
     v_parallel = np.full((Ny, Nx), np.nan, dtype=float)
     v_parallel_abs = np.full((Ny, Nx), np.nan, dtype=float)
     dist_out = np.full((Ny, Nx), np.nan, dtype=float)
+    line_out = np.full((Ny, Nx), -1, dtype=np.int32)
 
     # only assign where 'compute_mask' and 'keep' are true
     sub_keep = keep
@@ -1325,12 +1487,14 @@ def velocity_parallel_to_nearest_channel_field(
     v_parallel.ravel()[flat_pos] = vpar[sub_keep]
     v_parallel_abs.ravel()[flat_pos] = vpar_abs[sub_keep]
     dist_out.ravel()[flat_pos] = dists[sub_keep]
+    line_out.ravel()[flat_pos] = lids[nidx][sub_keep]
 
     ds_out = xr.Dataset(
         {
             "v_parallel":       ((lat_name, lon_name), v_parallel),
             "v_parallel_abs":   ((lat_name, lon_name), v_parallel_abs),
             "dist_to_channel_m":((lat_name, lon_name), dist_out),
+            "nearest_line_id":  ((lat_name, lon_name), line_out),
         },
         coords={lat_name: ds_perp[lat_name], lon_name: ds_perp[lon_name]},
         attrs={
@@ -1342,4 +1506,5 @@ def velocity_parallel_to_nearest_channel_field(
     ds_out["v_parallel"].attrs.update({"units": "m/day", "long_name": "front motion parallel to nearest channel"})
     ds_out["v_parallel_abs"].attrs.update({"units": "m/day", "long_name": "abs(parallel front motion)"})
     ds_out["dist_to_channel_m"].attrs.update({"units": "m", "long_name": "distance to nearest channel sample"})
+    ds_out["nearest_line_id"].attrs.update({"long_name": "positional row index of the nearest channel line in gdf_channels (-1 = none)"})
     return ds_out

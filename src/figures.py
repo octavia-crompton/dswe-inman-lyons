@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 # Resolve project root (works whether imported from notebooks/ or scripts/)
 # ---------------------------------------------------------------------------
 _THIS_DIR = Path(__file__).resolve().parent          # …/src
-PROJECT_ROOT = _THIS_DIR.parent                       # …/dswe-inman-lyons
+PROJECT_ROOT = _THIS_DIR.parent                       # …/Okavango-water-balance
 FIGURES_DIR = PROJECT_ROOT / "figures"
 REGISTRY_FILE = FIGURES_DIR / "registry.txt"
 
